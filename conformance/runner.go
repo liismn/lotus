@@ -14,6 +14,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/go-state-types/exitcode"
+	"github.com/hashicorp/go-multierror"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-blockservice"
 	"github.com/ipfs/go-cid"
@@ -39,7 +40,7 @@ var FallbackBlockstoreGetter interface {
 }
 
 // ExecuteMessageVector executes a message-class test vector.
-func ExecuteMessageVector(r Reporter, vector *schema.TestVector, variant *schema.Variant) {
+func ExecuteMessageVector(r Reporter, vector *schema.TestVector, variant *schema.Variant) (err error, diffs []string) {
 	var (
 		ctx       = context.Background()
 		baseEpoch = variant.Epoch
@@ -88,14 +89,16 @@ func ExecuteMessageVector(r Reporter, vector *schema.TestVector, variant *schema
 	// Once all messages are applied, assert that the final state root matches
 	// the expected postcondition root.
 	if expected, actual := vector.Post.StateTree.RootCID, root; expected != actual {
-		r.Errorf("wrong post root cid; expected %v, but got %v", expected, actual)
-		dumpThreeWayStateDiff(r, vector, bs, root)
-		r.FailNow()
+		ierr := fmt.Errorf("wrong post root cid; expected %v, but got %v", expected, actual)
+		r.Errorf(ierr.Error())
+		err = multierror.Append(err, ierr)
+		diffs = dumpThreeWayStateDiff(r, vector, bs, root)
 	}
+	return err, diffs
 }
 
 // ExecuteTipsetVector executes a tipset-class test vector.
-func ExecuteTipsetVector(r Reporter, vector *schema.TestVector, variant *schema.Variant) {
+func ExecuteTipsetVector(r Reporter, vector *schema.TestVector, variant *schema.Variant) (err error, diffs []string) {
 	var (
 		ctx       = context.Background()
 		baseEpoch = abi.ChainEpoch(variant.Epoch)
@@ -107,6 +110,7 @@ func ExecuteTipsetVector(r Reporter, vector *schema.TestVector, variant *schema.
 	bs, err := LoadBlockstore(vector.CAR)
 	if err != nil {
 		r.Fatalf("failed to load the vector CAR: %w", err)
+		return err, nil
 	}
 
 	// Create a new Driver.
@@ -127,6 +131,7 @@ func ExecuteTipsetVector(r Reporter, vector *schema.TestVector, variant *schema.
 		})
 		if err != nil {
 			r.Fatalf("failed to apply tipset %d: %s", i, err)
+			return err, nil
 		}
 
 		for j, v := range ret.AppliedResults {
@@ -136,7 +141,9 @@ func ExecuteTipsetVector(r Reporter, vector *schema.TestVector, variant *schema.
 
 		// Compare the receipts root.
 		if expected, actual := vector.Post.ReceiptsRoots[i], ret.ReceiptsRoot; expected != actual {
-			r.Errorf("post receipts root doesn't match; expected: %s, was: %s", expected, actual)
+			ierr := fmt.Errorf("post receipts root doesn't match; expected: %s, was: %s", expected, actual)
+			r.Errorf(ierr.Error())
+			err = multierror.Append(err, ierr)
 		}
 
 		prevEpoch = execEpoch
@@ -146,10 +153,12 @@ func ExecuteTipsetVector(r Reporter, vector *schema.TestVector, variant *schema.
 	// Once all messages are applied, assert that the final state root matches
 	// the expected postcondition root.
 	if expected, actual := vector.Post.StateTree.RootCID, root; expected != actual {
-		r.Errorf("wrong post root cid; expected %v, but got %v", expected, actual)
-		dumpThreeWayStateDiff(r, vector, bs, root)
-		r.FailNow()
+		ierr := fmt.Errorf("wrong post root cid; expected %v, but got %v", expected, actual)
+		r.Errorf(ierr.Error())
+		err = multierror.Append(err, ierr)
+		diffs = dumpThreeWayStateDiff(r, vector, bs, root)
 	}
+	return err, diffs
 }
 
 // AssertMsgResult compares a message result. It takes the expected receipt
@@ -169,7 +178,7 @@ func AssertMsgResult(r Reporter, expected *schema.Receipt, actual *vm.ApplyRet, 
 	}
 }
 
-func dumpThreeWayStateDiff(r Reporter, vector *schema.TestVector, bs blockstore.Blockstore, actual cid.Cid) {
+func dumpThreeWayStateDiff(r Reporter, vector *schema.TestVector, bs blockstore.Blockstore, actual cid.Cid) []string {
 	// check if statediff exists; if not, skip.
 	if err := exec.Command("statediff", "--help").Run(); err != nil {
 		r.Log("could not dump 3-way state tree diff upon test failure: statediff command not found")
@@ -178,7 +187,7 @@ func dumpThreeWayStateDiff(r Reporter, vector *schema.TestVector, bs blockstore.
 		r.Log("$ cd statediff")
 		r.Log("$ go generate ./...")
 		r.Log("$ go install ./cmd/statediff")
-		return
+		return nil
 	}
 
 	tmpCar, err := writeStateToTempCAR(bs,
@@ -188,6 +197,7 @@ func dumpThreeWayStateDiff(r Reporter, vector *schema.TestVector, bs blockstore.
 	)
 	if err != nil {
 		r.Fatalf("failed to write temporary state CAR: %s", err)
+		return nil
 	}
 	defer os.RemoveAll(tmpCar) //nolint:errcheck
 
@@ -202,28 +212,37 @@ func dumpThreeWayStateDiff(r Reporter, vector *schema.TestVector, bs blockstore.
 		d3 = color.New(color.FgGreen, color.Bold).Sprint("[Δ3]")
 	)
 
-	printDiff := func(left, right cid.Cid) {
+	diff := func(left, right cid.Cid) string {
 		cmd := exec.Command("statediff", "car", "--file", tmpCar, left.String(), right.String())
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			r.Fatalf("statediff failed: %s", err)
 		}
-		r.Log(string(b))
+		return string(b)
 	}
 
 	bold := color.New(color.Bold).SprintfFunc()
+
+	r.Log(bold("-----BEGIN STATEDIFF-----"))
 
 	// run state diffs.
 	r.Log(bold("=== dumping 3-way diffs between %s, %s, %s ===", a, b, c))
 
 	r.Log(bold("--- %s left: %s; right: %s ---", d1, a, b))
-	printDiff(vector.Post.StateTree.RootCID, actual)
+	diffA := diff(vector.Post.StateTree.RootCID, actual)
+	r.Log(diffA)
 
 	r.Log(bold("--- %s left: %s; right: %s ---", d2, c, b))
-	printDiff(vector.Pre.StateTree.RootCID, actual)
+	diffB := diff(vector.Pre.StateTree.RootCID, actual)
+	r.Log(diffB)
 
 	r.Log(bold("--- %s left: %s; right: %s ---", d3, c, a))
-	printDiff(vector.Pre.StateTree.RootCID, vector.Post.StateTree.RootCID)
+	diffC := diff(vector.Pre.StateTree.RootCID, vector.Post.StateTree.RootCID)
+	r.Log(diffC)
+
+	r.Log(bold("-----END STATEDIFF-----"))
+
+	return []string{diffA, diffB, diffC}
 }
 
 // writeStateToTempCAR writes the provided roots to a temporary CAR that'll be

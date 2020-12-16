@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -49,17 +48,8 @@ func doExtractTipset(opts extractOpts) error {
 			return fmt.Errorf("failed to fetch tipset %s: %w", ss[1], err)
 		}
 
-		switch fi, err := os.Stat(opts.file); {
-		case os.IsNotExist(err):
-			if err := os.MkdirAll(opts.file, 0755); err != nil {
-				return fmt.Errorf("failed to create directory %s: %w", opts.file, err)
-			}
-		case err == nil:
-			if !fi.IsDir() {
-				return fmt.Errorf("path %s is not a directory: %w", opts.file, err)
-			}
-		default:
-			return fmt.Errorf("failed to stat directory %s: %w", opts.file, err)
+		if err := ensureDir(opts.file); err != nil {
+			return err
 		}
 
 		return extractTipsetRange(ctx, left, right, opts.file)
