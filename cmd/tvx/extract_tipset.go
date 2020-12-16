@@ -6,10 +6,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/filecoin-project/test-vectors/schema"
 	"github.com/ipfs/go-cid"
 
+	"github.com/filecoin-project/lotus/chain/types"
 	lcli "github.com/filecoin-project/lotus/cli"
 	"github.com/filecoin-project/lotus/conformance"
 )
@@ -17,19 +21,75 @@ import (
 func doExtractTipset(opts extractOpts) error {
 	ctx := context.Background()
 
-	if opts.tsk == "" {
-		return fmt.Errorf("tipset key cannot be empty")
-	}
-
 	if opts.retain != "accessed-cids" {
 		return fmt.Errorf("tipset extraction only supports 'accessed-cids' state retention")
 	}
 
-	ts, err := lcli.ParseTipSetRef(ctx, FullAPI, opts.tsk)
-	if err != nil {
-		return fmt.Errorf("failed to fetch tipset: %w", err)
+	if opts.tsk == "" {
+		return fmt.Errorf("tipset key cannot be empty")
 	}
 
+	ss := strings.Split(opts.tsk, "..")
+	switch len(ss) {
+	case 1:
+		// we have to extract a single tipset.
+		ts, err := lcli.ParseTipSetRef(ctx, FullAPI, opts.tsk)
+		if err != nil {
+			return fmt.Errorf("failed to fetch tipset: %w", err)
+		}
+		return extractTipset(ctx, ts, opts.file)
+	case 2:
+		// we have to extract a range of tipsets.
+		left, err := lcli.ParseTipSetRef(ctx, FullAPI, ss[0])
+		if err != nil {
+			return fmt.Errorf("failed to fetch tipset %s: %w", ss[0], err)
+		}
+		right, err := lcli.ParseTipSetRef(ctx, FullAPI, ss[1])
+		if err != nil {
+			return fmt.Errorf("failed to fetch tipset %s: %w", ss[1], err)
+		}
+
+		switch fi, err := os.Stat(opts.file); {
+		case os.IsNotExist(err):
+			if err := os.MkdirAll(opts.file, 0755); err != nil {
+				return fmt.Errorf("failed to create directory %s: %w", opts.file, err)
+			}
+		case err == nil:
+			if !fi.IsDir() {
+				return fmt.Errorf("path %s is not a directory: %w", opts.file, err)
+			}
+		default:
+			return fmt.Errorf("failed to stat directory %s: %w", opts.file, err)
+		}
+
+		return extractTipsetRange(ctx, left, right, opts.file)
+
+	default:
+		return fmt.Errorf("unrecognized tipset format")
+	}
+}
+
+func extractTipsetRange(ctx context.Context, left *types.TipSet, right *types.TipSet, dir string) error {
+	// start from the right tipset and walk back the chain until the left tipset.
+	var err error
+	curr := right
+	for curr.Key() != left.Key() {
+		log.Printf("extracting tipset %s (height: %d)", curr.Key(), curr.Height())
+		err = extractTipset(ctx, curr, filepath.Join(dir, "epoch-"+curr.Height().String()))
+		if err != nil {
+			return fmt.Errorf("failed to extract tipset %s (height: %d): %w", curr.Key(), err)
+		}
+		curr, err = FullAPI.ChainGetTipSet(ctx, curr.Parents())
+		if err != nil {
+			return fmt.Errorf("failed to get tipset %s (height: %d): %w", curr.Parents(), curr.Height()-1, err)
+		}
+	}
+	// extract left.
+	log.Printf("extracting tipset %s (height: %d)", curr.Key(), curr.Height())
+	return extractTipset(ctx, curr, filepath.Join(dir, "epoch-"+curr.Height().String()))
+}
+
+func extractTipset(ctx context.Context, ts *types.TipSet, path string) error {
 	log.Printf("tipset block count: %d", len(ts.Blocks()))
 
 	var blocks []schema.Block
@@ -145,7 +205,7 @@ func doExtractTipset(opts extractOpts) error {
 	vector := schema.TestVector{
 		Class: schema.ClassTipset,
 		Meta: &schema.Metadata{
-			ID: opts.id,
+			ID: "@" + ts.Height().String(),
 			Gen: []schema.GenerationData{
 				{Source: fmt.Sprintf("network:%s", ntwkName)},
 				{Source: fmt.Sprintf("tipset:%s", ts.Key())},
@@ -182,5 +242,5 @@ func doExtractTipset(opts extractOpts) error {
 		})
 	}
 
-	return writeVector(vector, opts.file)
+	return writeVector(vector, path)
 }

@@ -62,13 +62,13 @@ var extractCmd = &cli.Command{
 		},
 		&cli.StringFlag{
 			Name:        "tsk",
-			Usage:       "tipset key to extract into a vector",
+			Usage:       "tipset key to extract into a vector, or range of tipsets in tsk1..tsk2 form",
 			Destination: &extractFlags.tsk,
 		},
 		&cli.StringFlag{
 			Name:        "out",
 			Aliases:     []string{"o"},
-			Usage:       "file to write test vector to",
+			Usage:       "file to write test vector to, or directory to write the batch to",
 			Destination: &extractFlags.file,
 		},
 		&cli.StringFlag{
