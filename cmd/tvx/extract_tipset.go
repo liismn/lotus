@@ -86,7 +86,7 @@ func extractTipsetRange(ctx context.Context, left *types.TipSet, right *types.Ti
 	}
 	// extract left.
 	log.Printf("extracting tipset %s (height: %d)", curr.Key(), curr.Height())
-	return extractTipset(ctx, curr, filepath.Join(dir, "epoch-"+curr.Height().String()))
+	return extractTipset(ctx, curr, filepath.Join(dir, "epoch-"+curr.Height().String()+".json"))
 }
 
 func extractTipset(ctx context.Context, ts *types.TipSet, path string) error {
