@@ -317,10 +317,10 @@ func doExtractMessage(opts extractOpts) error {
 		},
 	}
 
-	return writeVector(vector, opts.file)
+	return writeVector(&vector, opts.file)
 }
 
-func writeVector(vector schema.TestVector, file string) (err error) {
+func writeVector(vector *schema.TestVector, file string) (err error) {
 	output := io.WriteCloser(os.Stdout)
 	if file := file; file != "" {
 		dir := filepath.Dir(file)

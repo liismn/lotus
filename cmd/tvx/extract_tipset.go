@@ -30,15 +30,18 @@ func doExtractTipset(opts extractOpts) error {
 
 	ss := strings.Split(opts.tsk, "..")
 	switch len(ss) {
-	case 1:
-		// we have to extract a single tipset.
+	case 1: // extracting a single tipset.
 		ts, err := lcli.ParseTipSetRef(ctx, FullAPI, opts.tsk)
 		if err != nil {
 			return fmt.Errorf("failed to fetch tipset: %w", err)
 		}
-		return extractTipset(ctx, ts, opts.file)
-	case 2:
-		// we have to extract a range of tipsets.
+		v, err := extractTipset(ctx, ts)
+		if err != nil {
+			return err
+		}
+		return writeVector(v, opts.file)
+
+	case 2: // extracting a range of tipsets.
 		left, err := lcli.ParseTipSetRef(ctx, FullAPI, ss[0])
 		if err != nil {
 			return fmt.Errorf("failed to fetch tipset %s: %w", ss[0], err)
@@ -48,45 +51,93 @@ func doExtractTipset(opts extractOpts) error {
 			return fmt.Errorf("failed to fetch tipset %s: %w", ss[1], err)
 		}
 
-		if err := ensureDir(opts.file); err != nil {
+		vectors, err := extractTipsetRange(ctx, left, right)
+		if err != nil {
 			return err
 		}
-
-		return extractTipsetRange(ctx, left, right, opts.file)
+		if opts.squash {
+			return squashSingleTipsets(vectors, opts.file)
+		} else {
+			return writeVectors(vectors, opts.file)
+		}
 
 	default:
 		return fmt.Errorf("unrecognized tipset format")
 	}
 }
 
-func extractTipsetRange(ctx context.Context, left *types.TipSet, right *types.TipSet, dir string) error {
-	// start from the right tipset and walk back the chain until the left tipset.
-	var err error
-	curr := right
-	for curr.Key() != left.Key() {
-		log.Printf("extracting tipset %s (height: %d)", curr.Key(), curr.Height())
-		err = extractTipset(ctx, curr, filepath.Join(dir, "epoch-"+curr.Height().String()))
-		if err != nil {
-			return fmt.Errorf("failed to extract tipset %s (height: %d): %w", curr.Key(), err)
-		}
-		curr, err = FullAPI.ChainGetTipSet(ctx, curr.Parents())
-		if err != nil {
-			return fmt.Errorf("failed to get tipset %s (height: %d): %w", curr.Parents(), curr.Height()-1, err)
+// writeVectors writes each vector to a different file under the specified
+// directory.
+func writeVectors(vectors []*schema.TestVector, dir string) error {
+	// verify the output directory exists.
+	if err := ensureDir(dir); err != nil {
+		return err
+	}
+	// write each vector to its file.
+	for _, v := range vectors {
+		id := v.Meta.ID
+		path := filepath.Join(dir, fmt.Sprintf("%s.json", id))
+		if err := writeVector(v, path); err != nil {
+			return err
 		}
 	}
-	// extract left.
-	log.Printf("extracting tipset %s (height: %d)", curr.Key(), curr.Height())
-	return extractTipset(ctx, curr, filepath.Join(dir, "epoch-"+curr.Height().String()+".json"))
+	return nil
 }
 
-func extractTipset(ctx context.Context, ts *types.TipSet, path string) error {
+// squashSingleTipsets merges the supplied vectors and writes the result to the
+// specified file. This method updates vectors in place, so it's not safe to
+// reuse the supplied vectors after. It assumes that all tipset vectors contain
+// a single tipset.
+func squashSingleTipsets(vectors []*schema.TestVector, file string) error {
+	if len(vectors) == 0 {
+		return fmt.Errorf("no vectors provided")
+	}
+	if len(vectors) == 1 {
+		return writeVector(vectors[0], file)
+	}
+
+	base := vectors[0]
+	for i, v := range vectors[1:] {
+		t := v.ApplyTipsets[0]
+		t.EpochOffset = int64(i + 1)
+		base.ApplyTipsets = append(base.ApplyTipsets, t)
+		base.Post.ReceiptsRoots = append(base.Post.ReceiptsRoots, v.Post.ReceiptsRoots...)
+		base.Post.Receipts = append(base.Post.Receipts, v.Post.Receipts...)
+		base.Post.StateTree.RootCID = v.Post.StateTree.RootCID
+		base.Meta.ID += "," + v.Meta.ID
+	}
+	return writeVector(base, file)
+}
+
+func extractTipsetRange(ctx context.Context, left *types.TipSet, right *types.TipSet) (vectors []*schema.TestVector, err error) {
+	// start from the right tipset and walk back the chain until the left tipset, inclusive.
+	for curr := right; curr.Key() != left.Parents(); {
+		log.Printf("extracting tipset %s (height: %d)", curr.Key(), curr.Height())
+		ts, err := extractTipset(ctx, curr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to extract tipset %s (height: %d): %w", curr.Key(), curr.Height(), err)
+		}
+		vectors = append(vectors, ts)
+		curr, err = FullAPI.ChainGetTipSet(ctx, curr.Parents())
+		if err != nil {
+			return nil, fmt.Errorf("failed to get tipset %s (height: %d): %w", curr.Parents(), curr.Height()-1, err)
+		}
+	}
+	// reverse the slice.
+	for i, j := 0, len(vectors)-1; i < j; i, j = i+1, j-1 {
+		vectors[i], vectors[j] = vectors[j], vectors[i]
+	}
+	return vectors, nil
+}
+
+func extractTipset(ctx context.Context, ts *types.TipSet) (*schema.TestVector, error) {
 	log.Printf("tipset block count: %d", len(ts.Blocks()))
 
 	var blocks []schema.Block
 	for _, b := range ts.Blocks() {
 		msgs, err := FullAPI.ChainGetBlockMessages(ctx, b.Cid())
 		if err != nil {
-			return fmt.Errorf("failed to get block messages (cid: %s): %w", b.Cid(), err)
+			return nil, fmt.Errorf("failed to get block messages (cid: %s): %w", b.Cid(), err)
 		}
 
 		log.Printf("block %s has %d messages", b.Cid(), len(msgs.Cids))
@@ -95,14 +146,14 @@ func extractTipset(ctx context.Context, ts *types.TipSet, path string) error {
 		for _, m := range msgs.BlsMessages {
 			b, err := m.Serialize()
 			if err != nil {
-				return fmt.Errorf("failed to serialize message: %w", err)
+				return nil, fmt.Errorf("failed to serialize message: %w", err)
 			}
 			packed = append(packed, b)
 		}
 		for _, m := range msgs.SecpkMessages {
 			b, err := m.Message.Serialize()
 			if err != nil {
-				return fmt.Errorf("failed to serialize message: %w", err)
+				return nil, fmt.Errorf("failed to serialize message: %w", err)
 			}
 			packed = append(packed, b)
 		}
@@ -142,7 +193,7 @@ func extractTipset(ctx context.Context, ts *types.TipSet, path string) error {
 
 	tbs, ok := pst.Blockstore.(TracingBlockstore)
 	if !ok {
-		return fmt.Errorf("requested 'accessed-cids' state retention, but no tracing blockstore was present")
+		return nil, fmt.Errorf("requested 'accessed-cids' state retention, but no tracing blockstore was present")
 	}
 
 	tbs.StartTracing()
@@ -156,7 +207,7 @@ func extractTipset(ctx context.Context, ts *types.TipSet, path string) error {
 	}
 	result, err := driver.ExecuteTipset(pst.Blockstore, pst.Datastore, params)
 	if err != nil {
-		return fmt.Errorf("failed to execute tipset: %w", err)
+		return nil, fmt.Errorf("failed to execute tipset: %w", err)
 	}
 
 	accessed := tbs.FinishTracing()
@@ -167,29 +218,29 @@ func extractTipset(ctx context.Context, ts *types.TipSet, path string) error {
 		gw  = gzip.NewWriter(out)
 	)
 	if err := g.WriteCARIncluding(gw, accessed, ts.ParentState(), result.PostStateRoot); err != nil {
-		return err
+		return nil, err
 	}
 	if err = gw.Flush(); err != nil {
-		return err
+		return nil, err
 	}
 	if err = gw.Close(); err != nil {
-		return err
+		return nil, err
 	}
 
 	codename := GetProtocolCodename(ts.Height())
 	nv, err := FullAPI.StateNetworkVersion(ctx, ts.Key())
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	version, err := FullAPI.Version(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	ntwkName, err := FullAPI.StateNetworkName(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	vector := schema.TestVector{
@@ -232,5 +283,5 @@ func extractTipset(ctx context.Context, ts *types.TipSet, path string) error {
 		})
 	}
 
-	return writeVector(vector, path)
+	return &vector, nil
 }

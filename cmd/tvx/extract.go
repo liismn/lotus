@@ -21,6 +21,7 @@ type extractOpts struct {
 	retain             string
 	precursor          string
 	ignoreSanityChecks bool
+	squash             bool
 }
 
 var extractFlags extractOpts
@@ -92,6 +93,12 @@ var extractCmd = &cli.Command{
 			Usage:       "generate vector even if sanity checks fail",
 			Value:       false,
 			Destination: &extractFlags.ignoreSanityChecks,
+		},
+		&cli.BoolFlag{
+			Name:        "squash",
+			Usage:       "when extracting a tipset range, squash all tipsets into a single vector",
+			Value:       false,
+			Destination: &extractFlags.squash,
 		},
 	},
 }
