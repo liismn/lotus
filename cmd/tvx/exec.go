@@ -28,6 +28,7 @@ var execCmd = &cli.Command{
 	Description: "execute one or many test vectors against Lotus; supplied as a single JSON file, or a ndjson stdin stream",
 	Action:      runExec,
 	Flags: []cli.Flag{
+		&repoFlag,
 		&cli.StringFlag{
 			Name:        "file",
 			Usage:       "input file or directory; if not supplied, the vector will be read from stdin",

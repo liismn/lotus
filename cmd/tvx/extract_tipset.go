@@ -35,7 +35,7 @@ func doExtractTipset(opts extractOpts) error {
 		if err != nil {
 			return fmt.Errorf("failed to fetch tipset: %w", err)
 		}
-		v, err := extractTipset(ctx, ts)
+		v, err := extractTipsets(ctx, ts)
 		if err != nil {
 			return err
 		}
@@ -51,14 +51,22 @@ func doExtractTipset(opts extractOpts) error {
 			return fmt.Errorf("failed to fetch tipset %s: %w", ss[1], err)
 		}
 
-		vectors, err := extractTipsetRange(ctx, left, right)
+		tss, err := resolveTipsetRange(ctx, left, right)
 		if err != nil {
 			return err
 		}
 		if opts.squash {
-			return squashSingleTipsets(vectors, opts.file)
+			vector, err := extractTipsets(ctx, tss...)
+			if err != nil {
+				return err
+			}
+			return writeVector(vector, opts.file)
 		} else {
-			return writeVectors(vectors, opts.file)
+			vectors, err := extractIndividualTipsets(ctx, tss...)
+			if err != nil {
+				return err
+			}
+			return writeVectors(opts.file, vectors...)
 		}
 
 	default:
@@ -68,7 +76,7 @@ func doExtractTipset(opts extractOpts) error {
 
 // writeVectors writes each vector to a different file under the specified
 // directory.
-func writeVectors(vectors []*schema.TestVector, dir string) error {
+func writeVectors(dir string, vectors ...*schema.TestVector) error {
 	// verify the output directory exists.
 	if err := ensureDir(dir); err != nil {
 		return err
@@ -84,151 +92,87 @@ func writeVectors(vectors []*schema.TestVector, dir string) error {
 	return nil
 }
 
-// squashSingleTipsets merges the supplied vectors and writes the result to the
-// specified file. This method updates vectors in place, so it's not safe to
-// reuse the supplied vectors after. It assumes that all tipset vectors contain
-// a single tipset.
-func squashSingleTipsets(vectors []*schema.TestVector, file string) error {
-	if len(vectors) == 0 {
-		return fmt.Errorf("no vectors provided")
-	}
-	if len(vectors) == 1 {
-		return writeVector(vectors[0], file)
-	}
+//
+// // squashSingleTipsets merges the supplied vectors and writes the result to the
+// // specified file. This method updates vectors in place, so it's not safe to
+// // reuse the supplied vectors after. It assumes that all tipset vectors contain
+// // a single tipset.
+// func squashSingleTipsets(vectors []*schema.TestVector, file string) error {
+// 	if len(vectors) == 0 {
+// 		return fmt.Errorf("no vectors provided")
+// 	}
+// 	if len(vectors) == 1 {
+// 		return writeVector(vectors[0], file)
+// 	}
+//
+// 	base := vectors[0]
+// 	for i, v := range vectors[1:] {
+// 		t := v.ApplyTipsets[0]
+// 		t.EpochOffset = int64(i + 1)
+// 		base.ApplyTipsets = append(base.ApplyTipsets, t)
+// 		base.Post.ReceiptsRoots = append(base.Post.ReceiptsRoots, v.Post.ReceiptsRoots...)
+// 		base.Post.Receipts = append(base.Post.Receipts, v.Post.Receipts...)
+// 		base.Post.StateTree.RootCID = v.Post.StateTree.RootCID
+// 		base.Meta.ID += "," + v.Meta.ID
+// 	}
+// 	return writeVector(base, file)
+// }
 
-	base := vectors[0]
-	for i, v := range vectors[1:] {
-		t := v.ApplyTipsets[0]
-		t.EpochOffset = int64(i + 1)
-		base.ApplyTipsets = append(base.ApplyTipsets, t)
-		base.Post.ReceiptsRoots = append(base.Post.ReceiptsRoots, v.Post.ReceiptsRoots...)
-		base.Post.Receipts = append(base.Post.Receipts, v.Post.Receipts...)
-		base.Post.StateTree.RootCID = v.Post.StateTree.RootCID
-		base.Meta.ID += "," + v.Meta.ID
-	}
-	return writeVector(base, file)
-}
-
-func extractTipsetRange(ctx context.Context, left *types.TipSet, right *types.TipSet) (vectors []*schema.TestVector, err error) {
+func resolveTipsetRange(ctx context.Context, left *types.TipSet, right *types.TipSet) (tss []*types.TipSet, err error) {
 	// start from the right tipset and walk back the chain until the left tipset, inclusive.
 	for curr := right; curr.Key() != left.Parents(); {
-		log.Printf("extracting tipset %s (height: %d)", curr.Key(), curr.Height())
-		ts, err := extractTipset(ctx, curr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to extract tipset %s (height: %d): %w", curr.Key(), curr.Height(), err)
-		}
-		vectors = append(vectors, ts)
+		tss = append(tss, curr)
 		curr, err = FullAPI.ChainGetTipSet(ctx, curr.Parents())
 		if err != nil {
 			return nil, fmt.Errorf("failed to get tipset %s (height: %d): %w", curr.Parents(), curr.Height()-1, err)
 		}
 	}
 	// reverse the slice.
-	for i, j := 0, len(vectors)-1; i < j; i, j = i+1, j-1 {
-		vectors[i], vectors[j] = vectors[j], vectors[i]
+	for i, j := 0, len(tss)-1; i < j; i, j = i+1, j-1 {
+		tss[i], tss[j] = tss[j], tss[i]
+	}
+	return tss, nil
+}
+
+func extractIndividualTipsets(ctx context.Context, tss ...*types.TipSet) (vectors []*schema.TestVector, err error) {
+	for _, ts := range tss {
+		v, err := extractTipsets(ctx, ts)
+		if err != nil {
+			return nil, err
+		}
+		vectors = append(vectors, v)
 	}
 	return vectors, nil
 }
 
-func extractTipset(ctx context.Context, ts *types.TipSet) (*schema.TestVector, error) {
-	log.Printf("tipset block count: %d", len(ts.Blocks()))
-
-	var blocks []schema.Block
-	for _, b := range ts.Blocks() {
-		msgs, err := FullAPI.ChainGetBlockMessages(ctx, b.Cid())
-		if err != nil {
-			return nil, fmt.Errorf("failed to get block messages (cid: %s): %w", b.Cid(), err)
-		}
-
-		log.Printf("block %s has %d messages", b.Cid(), len(msgs.Cids))
-
-		packed := make([]schema.Base64EncodedBytes, 0, len(msgs.Cids))
-		for _, m := range msgs.BlsMessages {
-			b, err := m.Serialize()
-			if err != nil {
-				return nil, fmt.Errorf("failed to serialize message: %w", err)
-			}
-			packed = append(packed, b)
-		}
-		for _, m := range msgs.SecpkMessages {
-			b, err := m.Message.Serialize()
-			if err != nil {
-				return nil, fmt.Errorf("failed to serialize message: %w", err)
-			}
-			packed = append(packed, b)
-		}
-		blocks = append(blocks, schema.Block{
-			MinerAddr: b.Miner,
-			WinCount:  b.ElectionProof.WinCount,
-			Messages:  packed,
-		})
-	}
-
+func extractTipsets(ctx context.Context, tss ...*types.TipSet) (*schema.TestVector, error) {
 	var (
 		// create a read-through store that uses ChainGetObject to fetch unknown CIDs.
 		pst = NewProxyingStores(ctx, FullAPI)
 		g   = NewSurgeon(ctx, FullAPI, pst)
+
+		// recordingRand will record randomness so we can embed it in the test vector.
+		recordingRand = conformance.NewRecordingRand(new(conformance.LogReporter), FullAPI)
 	)
-
-	driver := conformance.NewDriver(ctx, schema.Selector{}, conformance.DriverOpts{
-		DisableVMFlush: true,
-	})
-
-	// this is the root of the state tree we start with.
-	root := ts.ParentState()
-	log.Printf("base state tree root CID: %s", root)
-
-	basefee := ts.Blocks()[0].ParentBaseFee
-	log.Printf("basefee: %s", basefee)
-
-	tipset := schema.Tipset{
-		BaseFee: *basefee.Int,
-		Blocks:  blocks,
-	}
-
-	// recordingRand will record randomness so we can embed it in the test vector.
-	recordingRand := conformance.NewRecordingRand(new(conformance.LogReporter), FullAPI)
-
-	log.Printf("using state retention strategy: %s", extractFlags.retain)
 
 	tbs, ok := pst.Blockstore.(TracingBlockstore)
 	if !ok {
 		return nil, fmt.Errorf("requested 'accessed-cids' state retention, but no tracing blockstore was present")
 	}
 
-	tbs.StartTracing()
+	driver := conformance.NewDriver(ctx, schema.Selector{}, conformance.DriverOpts{
+		DisableVMFlush: true,
+	})
 
-	params := conformance.ExecuteTipsetParams{
-		Preroot:     ts.ParentState(),
-		ParentEpoch: ts.Height() - 1,
-		Tipset:      &tipset,
-		ExecEpoch:   ts.Height(),
-		Rand:        recordingRand,
-	}
-	result, err := driver.ExecuteTipset(pst.Blockstore, pst.Datastore, params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute tipset: %w", err)
-	}
+	base := tss[0]
+	last := tss[len(tss)-1]
 
-	accessed := tbs.FinishTracing()
+	// this is the root of the state tree we start with.
+	root := base.ParentState()
+	log.Printf("base state tree root CID: %s", root)
 
-	// write a CAR with the accessed state into a buffer.
-	var (
-		out = new(bytes.Buffer)
-		gw  = gzip.NewWriter(out)
-	)
-	if err := g.WriteCARIncluding(gw, accessed, ts.ParentState(), result.PostStateRoot); err != nil {
-		return nil, err
-	}
-	if err = gw.Flush(); err != nil {
-		return nil, err
-	}
-	if err = gw.Close(); err != nil {
-		return nil, err
-	}
-
-	codename := GetProtocolCodename(ts.Height())
-	nv, err := FullAPI.StateNetworkVersion(ctx, ts.Key())
+	codename := GetProtocolCodename(base.Height())
+	nv, err := FullAPI.StateNetworkVersion(ctx, base.Key())
 	if err != nil {
 		return nil, err
 	}
@@ -246,42 +190,129 @@ func extractTipset(ctx context.Context, ts *types.TipSet) (*schema.TestVector, e
 	vector := schema.TestVector{
 		Class: schema.ClassTipset,
 		Meta: &schema.Metadata{
-			ID: "@" + ts.Height().String(),
+			ID: fmt.Sprintf("@%d..@%d", base.Height(), last.Height()),
 			Gen: []schema.GenerationData{
 				{Source: fmt.Sprintf("network:%s", ntwkName)},
-				{Source: fmt.Sprintf("tipset:%s", ts.Key())},
 				{Source: "github.com/filecoin-project/lotus", Version: version.String()}},
+			// will be completed by extra tipset stamps.
 		},
 		Selector: schema.Selector{
 			schema.SelectorMinProtocolVersion: codename,
 		},
-		Randomness: recordingRand.Recorded(),
-		CAR:        out.Bytes(),
 		Pre: &schema.Preconditions{
 			Variants: []schema.Variant{
-				{ID: codename, Epoch: int64(ts.Height()), NetworkVersion: uint(nv)},
+				{ID: codename, Epoch: int64(base.Height()), NetworkVersion: uint(nv)},
 			},
-			BaseFee: basefee.Int,
 			StateTree: &schema.StateTree{
-				RootCID: ts.ParentState(),
+				RootCID: base.ParentState(),
 			},
 		},
-		ApplyTipsets: []schema.Tipset{tipset},
 		Post: &schema.Postconditions{
-			StateTree: &schema.StateTree{
-				RootCID: result.PostStateRoot,
-			},
-			ReceiptsRoots: []cid.Cid{result.ReceiptsRoot},
+			StateTree: new(schema.StateTree),
 		},
 	}
 
-	for _, res := range result.AppliedResults {
-		vector.Post.Receipts = append(vector.Post.Receipts, &schema.Receipt{
-			ExitCode:    int64(res.ExitCode),
-			ReturnValue: res.Return,
-			GasUsed:     res.GasUsed,
+	tbs.StartTracing()
+
+	roots := []cid.Cid{base.ParentState()}
+	for i, ts := range tss {
+		log.Printf("tipset %s block count: %d", ts.Key(), len(ts.Blocks()))
+
+		var blocks []schema.Block
+		for _, b := range ts.Blocks() {
+			msgs, err := FullAPI.ChainGetBlockMessages(ctx, b.Cid())
+			if err != nil {
+				return nil, fmt.Errorf("failed to get block messages (cid: %s): %w", b.Cid(), err)
+			}
+
+			log.Printf("block %s has %d messages", b.Cid(), len(msgs.Cids))
+
+			packed := make([]schema.Base64EncodedBytes, 0, len(msgs.Cids))
+			for _, m := range msgs.BlsMessages {
+				b, err := m.Serialize()
+				if err != nil {
+					return nil, fmt.Errorf("failed to serialize message: %w", err)
+				}
+				packed = append(packed, b)
+			}
+			for _, m := range msgs.SecpkMessages {
+				b, err := m.Message.Serialize()
+				if err != nil {
+					return nil, fmt.Errorf("failed to serialize message: %w", err)
+				}
+				packed = append(packed, b)
+			}
+			blocks = append(blocks, schema.Block{
+				MinerAddr: b.Miner,
+				WinCount:  b.ElectionProof.WinCount,
+				Messages:  packed,
+			})
+		}
+
+		basefee := base.Blocks()[0].ParentBaseFee
+		log.Printf("tipset basefee: %s", basefee)
+
+		tipset := schema.Tipset{
+			BaseFee:     *basefee.Int,
+			Blocks:      blocks,
+			EpochOffset: int64(i),
+		}
+
+		params := conformance.ExecuteTipsetParams{
+			Preroot:     roots[len(roots)-1],
+			ParentEpoch: ts.Height() - 1,
+			Tipset:      &tipset,
+			ExecEpoch:   ts.Height(),
+			Rand:        recordingRand,
+		}
+
+		result, err := driver.ExecuteTipset(pst.Blockstore, pst.Datastore, params)
+		if err != nil {
+			return nil, fmt.Errorf("failed to execute tipset: %w", err)
+		}
+
+		roots = append(roots, result.PostStateRoot)
+
+		// update the vector.
+		vector.ApplyTipsets = append(vector.ApplyTipsets, tipset)
+		vector.Post.ReceiptsRoots = append(vector.Post.ReceiptsRoots, result.ReceiptsRoot)
+
+		for _, res := range result.AppliedResults {
+			vector.Post.Receipts = append(vector.Post.Receipts, &schema.Receipt{
+				ExitCode:    int64(res.ExitCode),
+				ReturnValue: res.Return,
+				GasUsed:     res.GasUsed,
+			})
+		}
+
+		vector.Meta.Gen = append(vector.Meta.Gen, schema.GenerationData{
+			Source: "tipset:" + ts.Key().String(),
 		})
 	}
+
+	accessed := tbs.FinishTracing()
+
+	//
+	// ComputeBaseFee(ctx, baseTs)
+
+	// write a CAR with the accessed state into a buffer.
+	var (
+		out = new(bytes.Buffer)
+		gw  = gzip.NewWriter(out)
+	)
+	if err := g.WriteCARIncluding(gw, accessed, roots...); err != nil {
+		return nil, err
+	}
+	if err = gw.Flush(); err != nil {
+		return nil, err
+	}
+	if err = gw.Close(); err != nil {
+		return nil, err
+	}
+
+	vector.Randomness = recordingRand.Recorded()
+	vector.Post.StateTree.RootCID = roots[len(roots)-1]
+	vector.CAR = out.Bytes()
 
 	return &vector, nil
 }
