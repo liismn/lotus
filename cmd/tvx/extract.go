@@ -1,8 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
 
+	"github.com/filecoin-project/test-vectors/schema"
 	"github.com/urfave/cli/v2"
 )
 
@@ -112,4 +118,44 @@ func runExtract(_ *cli.Context) error {
 	default:
 		return fmt.Errorf("unsupported vector class")
 	}
+}
+
+// writeVector writes the vector into the specified file, or to stdout if
+// file is empty.
+func writeVector(vector *schema.TestVector, file string) (err error) {
+	output := io.WriteCloser(os.Stdout)
+	if file := file; file != "" {
+		dir := filepath.Dir(file)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("unable to create directory %s: %w", dir, err)
+		}
+		output, err = os.Create(file)
+		if err != nil {
+			return err
+		}
+		defer output.Close() //nolint:errcheck
+		defer log.Printf("wrote test vector to file: %s", file)
+	}
+
+	enc := json.NewEncoder(output)
+	enc.SetIndent("", "  ")
+	return enc.Encode(&vector)
+}
+
+// writeVectors writes each vector to a different file under the specified
+// directory.
+func writeVectors(dir string, vectors ...*schema.TestVector) error {
+	// verify the output directory exists.
+	if err := ensureDir(dir); err != nil {
+		return err
+	}
+	// write each vector to its file.
+	for _, v := range vectors {
+		id := v.Meta.ID
+		path := filepath.Join(dir, fmt.Sprintf("%s.json", id))
+		if err := writeVector(v, path); err != nil {
+			return err
+		}
+	}
+	return nil
 }

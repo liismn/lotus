@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path/filepath"
 	"strings"
 
 	"github.com/filecoin-project/test-vectors/schema"
@@ -51,17 +50,20 @@ func doExtractTipset(opts extractOpts) error {
 			return fmt.Errorf("failed to fetch tipset %s: %w", ss[1], err)
 		}
 
+		// resolve the tipset range.
 		tss, err := resolveTipsetRange(ctx, left, right)
 		if err != nil {
 			return err
 		}
 		if opts.squash {
+			// we are squashing all tipsets into a single multi-tipset vector.
 			vector, err := extractTipsets(ctx, tss...)
 			if err != nil {
 				return err
 			}
 			return writeVector(vector, opts.file)
 		} else {
+			// we are generating a single-tipset vector per tipset.
 			vectors, err := extractIndividualTipsets(ctx, tss...)
 			if err != nil {
 				return err
@@ -73,50 +75,6 @@ func doExtractTipset(opts extractOpts) error {
 		return fmt.Errorf("unrecognized tipset format")
 	}
 }
-
-// writeVectors writes each vector to a different file under the specified
-// directory.
-func writeVectors(dir string, vectors ...*schema.TestVector) error {
-	// verify the output directory exists.
-	if err := ensureDir(dir); err != nil {
-		return err
-	}
-	// write each vector to its file.
-	for _, v := range vectors {
-		id := v.Meta.ID
-		path := filepath.Join(dir, fmt.Sprintf("%s.json", id))
-		if err := writeVector(v, path); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-//
-// // squashSingleTipsets merges the supplied vectors and writes the result to the
-// // specified file. This method updates vectors in place, so it's not safe to
-// // reuse the supplied vectors after. It assumes that all tipset vectors contain
-// // a single tipset.
-// func squashSingleTipsets(vectors []*schema.TestVector, file string) error {
-// 	if len(vectors) == 0 {
-// 		return fmt.Errorf("no vectors provided")
-// 	}
-// 	if len(vectors) == 1 {
-// 		return writeVector(vectors[0], file)
-// 	}
-//
-// 	base := vectors[0]
-// 	for i, v := range vectors[1:] {
-// 		t := v.ApplyTipsets[0]
-// 		t.EpochOffset = int64(i + 1)
-// 		base.ApplyTipsets = append(base.ApplyTipsets, t)
-// 		base.Post.ReceiptsRoots = append(base.Post.ReceiptsRoots, v.Post.ReceiptsRoots...)
-// 		base.Post.Receipts = append(base.Post.Receipts, v.Post.Receipts...)
-// 		base.Post.StateTree.RootCID = v.Post.StateTree.RootCID
-// 		base.Meta.ID += "," + v.Meta.ID
-// 	}
-// 	return writeVector(base, file)
-// }
 
 func resolveTipsetRange(ctx context.Context, left *types.TipSet, right *types.TipSet) (tss []*types.TipSet, err error) {
 	// start from the right tipset and walk back the chain until the left tipset, inclusive.

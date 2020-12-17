@@ -39,6 +39,17 @@ var FallbackBlockstoreGetter interface {
 	ChainReadObj(context.Context, cid.Cid) ([]byte, error)
 }
 
+var TipsetVectorOpts struct {
+	// PipelineBaseFee pipelines the basefee in multi-tipset vectors from one
+	// tipset to another. Basefees in the vector are ignored, except for that of
+	// the first tipset. UNUSED.
+	PipelineBaseFee bool
+
+	// OnTipsetApplied is a callback function called after a tipset has been
+	// applied.
+	OnTipsetApplied func(bs blockstore.Blockstore, params *ExecuteTipsetParams, res *ExecuteTipsetResult)
+}
+
 // ExecuteMessageVector executes a message-class test vector.
 func ExecuteMessageVector(r Reporter, vector *schema.TestVector, variant *schema.Variant) (err error, diffs []string) {
 	var (
@@ -122,16 +133,22 @@ func ExecuteTipsetVector(r Reporter, vector *schema.TestVector, variant *schema.
 	for i, ts := range vector.ApplyTipsets {
 		ts := ts // capture
 		execEpoch := baseEpoch + abi.ChainEpoch(ts.EpochOffset)
-		ret, err := driver.ExecuteTipset(bs, tmpds, ExecuteTipsetParams{
+		params := ExecuteTipsetParams{
 			Preroot:     root,
 			ParentEpoch: prevEpoch,
 			Tipset:      &ts,
 			ExecEpoch:   execEpoch,
 			Rand:        NewReplayingRand(r, vector.Randomness),
-		})
+		}
+		ret, err := driver.ExecuteTipset(bs, tmpds, params)
 		if err != nil {
 			r.Fatalf("failed to apply tipset %d: %s", i, err)
 			return err, nil
+		}
+
+		// invoke the callback if there's one.
+		if cb := TipsetVectorOpts.OnTipsetApplied; cb != nil {
+			cb(bs, &params, ret)
 		}
 
 		for j, v := range ret.AppliedResults {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,22 +11,32 @@ import (
 	"strings"
 
 	"github.com/fatih/color"
+	"github.com/filecoin-project/go-address"
+	cbornode "github.com/ipfs/go-ipld-cbor"
 	"github.com/urfave/cli/v2"
 
-	"github.com/filecoin-project/lotus/conformance"
-
 	"github.com/filecoin-project/test-vectors/schema"
+
+	"github.com/filecoin-project/lotus/chain/state"
+	"github.com/filecoin-project/lotus/chain/types"
+	"github.com/filecoin-project/lotus/conformance"
+	"github.com/filecoin-project/lotus/lib/blockstore"
 )
 
 var execFlags struct {
 	file               string
 	out                string
+	driverOpts         cli.StringSlice
 	fallbackBlockstore bool
 }
 
+const (
+	optSaveBalances = "save-balances"
+)
+
 var execCmd = &cli.Command{
 	Name:        "exec",
-	Description: "execute one or many test vectors against Lotus; supplied as a single JSON file, or a ndjson stdin stream",
+	Description: "execute one or many test vectors against Lotus; supplied as a single JSON file, a directory, or a ndjson stdin stream",
 	Action:      runExec,
 	Flags: []cli.Flag{
 		&repoFlag,
@@ -42,8 +53,13 @@ var execCmd = &cli.Command{
 		},
 		&cli.StringFlag{
 			Name:        "out",
-			Usage:       "output directory, only used when the input is a directory",
+			Usage:       "output directory where to save the results, only used when the input is a directory",
 			Destination: &execFlags.out,
+		},
+		&cli.StringSliceFlag{
+			Name:        "driver-opt",
+			Usage:       "comma-separated list of driver options (EXPERIMENTAL; will change), supported: 'save-balances=<dst>', 'pipeline-basefee' (unused); only available in single-file mode",
+			Destination: &execFlags.driverOpts,
 		},
 	},
 }
@@ -78,8 +94,43 @@ func runExec(c *cli.Context) error {
 		}
 		return execVectorDir(path, outdir)
 	}
+
+	// process tipset vector options.
+	if err := processTipsetOpts(); err != nil {
+		return err
+	}
+
 	err, _ = execVectorFile(new(conformance.LogReporter), path)
 	return err
+}
+
+func processTipsetOpts() error {
+	for _, opt := range execFlags.driverOpts.Value() {
+		switch ss := strings.Split(opt, "="); {
+		case ss[0] == optSaveBalances:
+			filename := ss[1]
+			log.Printf("saving balances after each tipset in: %s", filename)
+			balancesFile, err := os.Create(filename)
+			if err != nil {
+				return err
+			}
+			w := bufio.NewWriter(balancesFile)
+			cb := func(bs blockstore.Blockstore, params *conformance.ExecuteTipsetParams, res *conformance.ExecuteTipsetResult) {
+				cst := cbornode.NewCborStore(bs)
+				st, err := state.LoadStateTree(cst, res.PostStateRoot)
+				if err != nil {
+					return
+				}
+				_ = st.ForEach(func(addr address.Address, actor *types.Actor) error {
+					_, err := fmt.Fprintln(w, params.ExecEpoch, addr, actor.Balance)
+					return err
+				})
+				_ = w.Flush()
+			}
+			conformance.TipsetVectorOpts.OnTipsetApplied = cb
+		}
+	}
+	return nil
 }
 
 func execVectorDir(path string, outdir string) error {
