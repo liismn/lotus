@@ -230,15 +230,21 @@ func dumpThreeWayStateDiff(r Reporter, vector *schema.TestVector, bs blockstore.
 
 	r.Log(bold("--- %s left: %s; right: %s ---", d1, a, b))
 	diffA := diff(vector.Post.StateTree.RootCID, actual)
+	r.Log(bold("----------BEGIN STATEDIFF A----------"))
 	r.Log(diffA)
+	r.Log(bold("----------END STATEDIFF A----------"))
 
 	r.Log(bold("--- %s left: %s; right: %s ---", d2, c, b))
 	diffB := diff(vector.Pre.StateTree.RootCID, actual)
+	r.Log(bold("----------BEGIN STATEDIFF B----------"))
 	r.Log(diffB)
+	r.Log(bold("----------END STATEDIFF B----------"))
 
 	r.Log(bold("--- %s left: %s; right: %s ---", d3, c, a))
 	diffC := diff(vector.Pre.StateTree.RootCID, vector.Post.StateTree.RootCID)
+	r.Log(bold("----------BEGIN STATEDIFF C----------"))
 	r.Log(diffC)
+	r.Log(bold("----------END STATEDIFF C----------"))
 
 	r.Log(bold("-----END STATEDIFF-----"))
 
