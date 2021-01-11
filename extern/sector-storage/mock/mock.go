@@ -427,6 +427,10 @@ func (mgr *SectorMgr) ReturnSealPreCommit1(ctx context.Context, callID storiface
 	panic("not supported")
 }
 
+func (mgr *SectorMgr) ReturnSealPreCommit12(ctx context.Context, callID storiface.CallID, sealed storage.SectorCids, err *storiface.CallError) error {
+	panic("not supported")
+}
+
 func (mgr *SectorMgr) ReturnSealPreCommit2(ctx context.Context, callID storiface.CallID, sealed storage.SectorCids, err *storiface.CallError) error {
 	panic("not supported")
 }

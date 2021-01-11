@@ -134,6 +134,7 @@ func Err(code ErrorCode, sub error) *CallError {
 type WorkerReturn interface {
 	ReturnAddPiece(ctx context.Context, callID CallID, pi abi.PieceInfo, err *CallError) error
 	ReturnSealPreCommit1(ctx context.Context, callID CallID, p1o storage.PreCommit1Out, err *CallError) error
+	ReturnSealPreCommit12(ctx context.Context, callID CallID, sealed storage.SectorCids, err *CallError) error
 	ReturnSealPreCommit2(ctx context.Context, callID CallID, sealed storage.SectorCids, err *CallError) error
 	ReturnSealCommit1(ctx context.Context, callID CallID, out storage.Commit1Out, err *CallError) error
 	ReturnSealCommit2(ctx context.Context, callID CallID, proof storage.Proof, err *CallError) error

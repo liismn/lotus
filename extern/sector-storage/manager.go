@@ -346,12 +346,17 @@ func (m *Manager) AddPiece(ctx context.Context, sector storage.SectorRef, existi
 }
 
 func (m *Manager) SealPreCommit1(ctx context.Context, sector storage.SectorRef, ticket abi.SealRandomness, pieces []abi.PieceInfo) (out storage.PreCommit1Out, err error) {
+	return storage.PreCommit1Out{}, nil
+}
+
+func (m *Manager) SealPreCommit(ctx context.Context, sector storage.SectorRef, ticket abi.SealRandomness, pieces []abi.PieceInfo) (out storage.SectorCids, err error) {
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	wk, wait, cancel, err := m.getWork(ctx, sealtasks.TTPreCommit1, sector, ticket, pieces)
 	if err != nil {
-		return nil, xerrors.Errorf("getWork: %w", err)
+		return storage.SectorCids{}, xerrors.Errorf("getWork: %w", err)
 	}
 	defer cancel()
 
@@ -363,7 +368,7 @@ func (m *Manager) SealPreCommit1(ctx context.Context, sector storage.SectorRef, 
 			return
 		}
 		if p != nil {
-			out = p.(storage.PreCommit1Out)
+			out = p.(storage.SectorCids)
 		}
 	}
 
@@ -373,24 +378,27 @@ func (m *Manager) SealPreCommit1(ctx context.Context, sector storage.SectorRef, 
 	}
 
 	if err := m.index.StorageLock(ctx, sector.ID, storiface.FTUnsealed, storiface.FTSealed|storiface.FTCache); err != nil {
-		return nil, xerrors.Errorf("acquiring sector lock: %w", err)
+		return storage.SectorCids{}, xerrors.Errorf("acquiring sector lock: %w", err)
 	}
 
 	// TODO: also consider where the unsealed data sits
 
-	selector := newAllocSelector(m.index, storiface.FTCache|storiface.FTSealed, storiface.PathSealing)
+	// selector := newAllocSelector(m.index, storiface.FTCache|storiface.FTSealed, storiface.PathSealing)
 
-	err = m.sched.Schedule(ctx, sector, sealtasks.TTPreCommit1, selector, m.schedFetch(sector, storiface.FTUnsealed, storiface.PathSealing, storiface.AcquireMove), func(ctx context.Context, w Worker) error {
-		err := m.startWork(ctx, w, wk)(w.SealPreCommit1(ctx, sector, ticket, pieces))
-		if err != nil {
-			return err
-		}
+	// err = m.sched.Schedule(ctx, sector, sealtasks.TTPreCommit1, selector, m.schedFetch(sector, storiface.FTUnsealed, storiface.PathSealing, storiface.AcquireMove), func(ctx context.Context, w Worker) error {
+	//		err := m.startWork(ctx, w, wk)(w.SealPreCommit1(ctx, sector, ticket, pieces))
+	//		if err != nil {
+	//			return err
+	//		}
+	//
+	//		waitRes()
+	//		return nil
+	//	})
 
-		waitRes()
-		return nil
-	})
+	// generate data for kafka, which can all rust-*-ffi directly
+	waitRes()
 	if err != nil {
-		return nil, err
+		return storage.SectorCids{}, err
 	}
 
 	return out, waitErr
@@ -630,6 +638,10 @@ func (m *Manager) ReturnSealPreCommit1(ctx context.Context, callID storiface.Cal
 }
 
 func (m *Manager) ReturnSealPreCommit2(ctx context.Context, callID storiface.CallID, sealed storage.SectorCids, err *storiface.CallError) error {
+	return m.returnResult(callID, sealed, err)
+}
+
+func (m *Manager) ReturnSealPreCommit12(ctx context.Context, callID storiface.CallID, sealed storage.SectorCids, err *storiface.CallError) error {
 	return m.returnResult(callID, sealed, err)
 }
 

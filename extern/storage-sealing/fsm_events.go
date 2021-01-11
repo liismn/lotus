@@ -136,6 +136,18 @@ func (evt SectorPreCommit2) apply(state *SectorInfo) {
 	state.CommR = &commr
 }
 
+type SectorPreCommit12 struct {
+	Sealed   cid.Cid
+	Unsealed cid.Cid
+}
+
+func (evt SectorPreCommit12) apply(state *SectorInfo) {
+	commd := evt.Unsealed
+	state.CommD = &commd
+	commr := evt.Sealed
+	state.CommR = &commr
+}
+
 type SectorPreCommitLanded struct {
 	TipSet TipSetToken
 }

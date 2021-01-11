@@ -121,6 +121,7 @@ require (
 	github.com/multiformats/go-multibase v0.0.3
 	github.com/multiformats/go-multihash v0.0.14
 	github.com/opentracing/opentracing-go v1.2.0
+	github.com/pkg/errors v0.9.1
 	github.com/polydawn/refmt v0.0.0-20190809202753-05966cbd336a
 	github.com/prometheus/client_golang v1.6.0
 	github.com/raulk/clock v1.1.0
