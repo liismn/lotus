@@ -346,7 +346,7 @@ func (m *Manager) AddPiece(ctx context.Context, sector storage.SectorRef, existi
 }
 
 func (m *Manager) SealPreCommit1(ctx context.Context, sector storage.SectorRef, ticket abi.SealRandomness, pieces []abi.PieceInfo) (out storage.PreCommit1Out, err error) {
-	return storage.PreCommit1Out{}, nil
+	return storage.PreCommit1Out{}, xerrors.Errorf("Unspported Now")
 }
 
 func (m *Manager) SealPreCommit(ctx context.Context, sector storage.SectorRef, ticket abi.SealRandomness, pieces []abi.PieceInfo) (out storage.SectorCids, err error) {
