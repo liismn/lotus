@@ -27,7 +27,7 @@ type SealPreCommitParam struct {
 	SealedPath   string
 	UnsealedPath string
 	SectorNumber uint64
-	ProverID     address.Address
+	ProverID     []byte
 	Ticket       abi.SealRandomness
 	Pieces       []PieceInfo
 	PiecesLen    uint
@@ -141,6 +141,7 @@ func (m *Manager) sendSealPreCommitRequest(sector storage.SectorRef, ticket abi.
 	if err != nil {
 		return errors.Wrap(err, "failed to convert ActorID to prover id ([32]byte) for FFI")
 	}
+	proverID := To32ByteArray(maddr.Payload()).Inner
 
 	// filPublicPieceInfos, filPublicPieceInfosLen, err := toFilPublicPieceInfos(pieces)
 	filPublicPieceInfos, filPublicPieceInfosLen, err := ToFilPublicPieceInfos(pieces)
@@ -155,7 +156,7 @@ func (m *Manager) sendSealPreCommitRequest(sector storage.SectorRef, ticket abi.
 		SealedPath:   "sealed",
 		UnsealedPath: "unsealed",
 		SectorNumber: uint64(sector.ID.Number),
-		ProverID:     maddr,
+		ProverID:     proverID[:],
 		Ticket:       ticket, // [32]byte
 		Pieces:       filPublicPieceInfos,
 		PiecesLen:    filPublicPieceInfosLen,
@@ -189,10 +190,10 @@ func to32ByteCommP(pieceCID cid.Cid) (generated.Fil32ByteArray, error) {
 		return generated.Fil32ByteArray{}, errors.Wrap(err, "failed to transform sealed CID to CommP")
 	}
 
-	return to32ByteArray(commP), nil
+	return To32ByteArray(commP), nil
 }
 
-func to32ByteArray(in []byte) generated.Fil32ByteArray {
+func To32ByteArray(in []byte) generated.Fil32ByteArray {
 	var out generated.Fil32ByteArray
 	copy(out.Inner[:], in)
 	return out
@@ -265,7 +266,7 @@ func to32ByteCommR(sealedCID cid.Cid) (generated.Fil32ByteArray, error) {
 		return generated.Fil32ByteArray{}, errors.Wrap(err, "failed to transform sealed CID to CommR")
 	}
 
-	return to32ByteArray(commD), nil
+	return To32ByteArray(commD), nil
 }
 func to32ByteCommD(unsealedCID cid.Cid) (generated.Fil32ByteArray, error) {
 	commD, err := commcid.CIDToDataCommitmentV1(unsealedCID)
@@ -273,7 +274,7 @@ func to32ByteCommD(unsealedCID cid.Cid) (generated.Fil32ByteArray, error) {
 		return generated.Fil32ByteArray{}, errors.Wrap(err, "failed to transform sealed CID to CommD")
 	}
 
-	return to32ByteArray(commD), nil
+	return To32ByteArray(commD), nil
 }
 func (m *Manager) listenSealPreCommitResponse() {
 	for {
