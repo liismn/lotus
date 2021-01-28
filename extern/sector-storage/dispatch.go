@@ -20,12 +20,31 @@ type PieceInfo struct {
 	CommP    []byte
 }
 
-type SealPreCommitParam struct {
-	CallID       storiface.CallID `json:"CallID"`
-	ProofType    uint
+type CallID struct {
+	Sector       abi.SectorID
+	ID           uuid.UUID
 	CachePath    string
 	SealedPath   string
 	UnsealedPath string
+}
+
+type AddPieceParam struct {
+	CallID             CallID `json:"CallID"`
+	ProofType          uint
+	ExistingPieceSizes []abi.UnpaddedPieceSize
+	PieceSize          abi.UnpaddedPieceSize
+}
+
+type AddPieceResp struct {
+	ErrCode    int
+	CallID     CallID `json: "CallID"`
+	PieceInfos []abi.PieceInfo
+	ServerID   string
+}
+
+type SealPreCommitParam struct {
+	CallID       CallID `json:"CallID"`
+	ProofType    uint
 	SectorNumber uint64
 	ProverID     []byte
 	Ticket       abi.SealRandomness
@@ -56,14 +75,12 @@ func (resp *SealPreCommitResp) GetCids() (storage.SectorCids, error) {
 }
 
 type SealCommitParam struct {
-	CallID       storiface.CallID `json:"CallID"`
+	CallID       CallID `json:"CallID"`
 	ProofType    uint
 	CommD        []byte
 	CommR        []byte
-	CachePath    string
-	SealedPath   string
 	SectorNumber uint64
-	ProverID     address.Address
+	ProverID     []byte
 	Ticket       abi.SealRandomness
 	Seed         abi.InteractiveSealRandomness
 	Pieces       []PieceInfo
@@ -117,9 +134,12 @@ type SealPreCommitResult struct {
 func (m *Manager) sendSealPreCommitRequest(sector storage.SectorRef, ticket abi.SealRandomness, pieces []abi.PieceInfo) error {
 	// clean up previous attempts if they exist (sealed, cache)
 	// find existed unseal sector path
-	ci := storiface.CallID{
-		Sector: sector.ID,
-		ID:     uuid.New(),
+	ci := CallID{
+		Sector:       sector.ID,
+		ID:           uuid.New(),
+		CachePath:    "cache",
+		SealedPath:   "sealed",
+		UnsealedPath: "unsealed",
 	}
 	var sum abi.UnpaddedPieceSize
 	for _, piece := range pieces {
@@ -152,9 +172,6 @@ func (m *Manager) sendSealPreCommitRequest(sector storage.SectorRef, ticket abi.
 	request := SealPreCommitParam{
 		CallID:       ci,
 		ProofType:    uint(proofType),
-		CachePath:    "cache",
-		SealedPath:   "sealed",
-		UnsealedPath: "unsealed",
 		SectorNumber: uint64(sector.ID.Number),
 		ProverID:     proverID[:],
 		Ticket:       ticket, // [32]byte
@@ -201,9 +218,12 @@ func To32ByteArray(in []byte) generated.Fil32ByteArray {
 
 func (m *Manager) sendSealCommitRequest(sector storage.SectorRef, ticket abi.SealRandomness, seed abi.InteractiveSealRandomness, pieces []abi.PieceInfo, cids storage.SectorCids) error {
 	// aquireSector
-	ci := storiface.CallID{
-		Sector: sector.ID,
-		ID:     uuid.New(),
+	ci := CallID{
+		Sector:       sector.ID,
+		ID:           uuid.New(),
+		CachePath:    "cache",
+		SealedPath:   "sealed",
+		UnsealedPath: "unsealed",
 	}
 	var sum abi.UnpaddedPieceSize
 	for _, piece := range pieces {
@@ -225,6 +245,7 @@ func (m *Manager) sendSealCommitRequest(sector storage.SectorRef, ticket abi.Sea
 	if err != nil {
 		return errors.Wrap(err, "failed to convert ActorID to prover id ([32]byte) for FFI")
 	}
+	proverID := To32ByteArray(maddr.Payload()).Inner
 
 	// filPublicPieceInfos, filPublicPieceInfosLen, err := toFilPublicPieceInfos(pieces)
 	filPublicPieceInfos, filPublicPieceInfosLen, err := ToFilPublicPieceInfos(pieces)
@@ -247,10 +268,8 @@ func (m *Manager) sendSealCommitRequest(sector storage.SectorRef, ticket abi.Sea
 		ProofType:    uint(proofType),
 		CommD:        commD.Inner[:],
 		CommR:        commR.Inner[:],
-		CachePath:    "cache",
-		SealedPath:   "sealed",
 		SectorNumber: uint64(sector.ID.Number),
-		ProverID:     maddr,
+		ProverID:     proverID[:],
 		Ticket:       ticket,
 		Seed:         seed,
 		Pieces:       filPublicPieceInfos,
