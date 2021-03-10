@@ -49,6 +49,7 @@ type Worker interface {
 type SectorManager interface {
 	ReadPiece(context.Context, io.Writer, storage.SectorRef, storiface.UnpaddedByteIndex, abi.UnpaddedPieceSize, abi.SealRandomness, cid.Cid) error
 
+	KafkaSealerInterface
 	ffiwrapper.StorageSealer
 	storage.Prover
 	storiface.WorkerReturn
@@ -80,8 +81,9 @@ type Manager struct {
 	// used when we get an early return and there's no callToWork mapping
 	callRes map[storiface.CallID]chan result
 
-	results map[WorkID]result
-	waitRes map[WorkID]chan struct{}
+	results     map[WorkID]result
+	waitRes     map[WorkID]chan struct{}
+	kafkaSealer *KafkaSealer
 }
 
 type result struct {
@@ -129,11 +131,12 @@ func New(ctx context.Context, ls stores.LocalStorage, si stores.SectorIndex, sc 
 
 		Prover: prover,
 
-		work:       mss,
-		callToWork: map[storiface.CallID]WorkID{},
-		callRes:    map[storiface.CallID]chan result{},
-		results:    map[WorkID]result{},
-		waitRes:    map[WorkID]chan struct{}{},
+		work:        mss,
+		callToWork:  map[storiface.CallID]WorkID{},
+		callRes:     map[storiface.CallID]chan result{},
+		results:     map[WorkID]result{},
+		waitRes:     map[WorkID]chan struct{}{},
+		kafkaSealer: newKafkaSealer(),
 	}
 
 	m.setupWorkTracker()
@@ -346,17 +349,13 @@ func (m *Manager) AddPiece(ctx context.Context, sector storage.SectorRef, existi
 }
 
 func (m *Manager) SealPreCommit1(ctx context.Context, sector storage.SectorRef, ticket abi.SealRandomness, pieces []abi.PieceInfo) (out storage.PreCommit1Out, err error) {
-	return storage.PreCommit1Out{}, xerrors.Errorf("Unspported Now")
-}
-
-func (m *Manager) SealPreCommit(ctx context.Context, sector storage.SectorRef, ticket abi.SealRandomness, pieces []abi.PieceInfo) (out storage.SectorCids, err error) {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	wk, wait, cancel, err := m.getWork(ctx, sealtasks.TTPreCommit1, sector, ticket, pieces)
 	if err != nil {
-		return storage.SectorCids{}, xerrors.Errorf("getWork: %w", err)
+		return nil, xerrors.Errorf("getWork: %w", err)
 	}
 	defer cancel()
 
@@ -368,7 +367,7 @@ func (m *Manager) SealPreCommit(ctx context.Context, sector storage.SectorRef, t
 			return
 		}
 		if p != nil {
-			out = p.(storage.SectorCids)
+			out = p.(storage.PreCommit1Out)
 		}
 	}
 
@@ -378,27 +377,25 @@ func (m *Manager) SealPreCommit(ctx context.Context, sector storage.SectorRef, t
 	}
 
 	if err := m.index.StorageLock(ctx, sector.ID, storiface.FTUnsealed, storiface.FTSealed|storiface.FTCache); err != nil {
-		return storage.SectorCids{}, xerrors.Errorf("acquiring sector lock: %w", err)
+		return nil, xerrors.Errorf("acquiring sector lock: %w", err)
 	}
 
 	// TODO: also consider where the unsealed data sits
 
-	// selector := newAllocSelector(m.index, storiface.FTCache|storiface.FTSealed, storiface.PathSealing)
+	selector := newAllocSelector(m.index, storiface.FTCache|storiface.FTSealed, storiface.PathSealing)
 
-	// err = m.sched.Schedule(ctx, sector, sealtasks.TTPreCommit1, selector, m.schedFetch(sector, storiface.FTUnsealed, storiface.PathSealing, storiface.AcquireMove), func(ctx context.Context, w Worker) error {
-	//		err := m.startWork(ctx, w, wk)(w.SealPreCommit1(ctx, sector, ticket, pieces))
-	//		if err != nil {
-	//			return err
-	//		}
-	//
-	//		waitRes()
-	//		return nil
-	//	})
+	err = m.sched.Schedule(ctx, sector, sealtasks.TTPreCommit1, selector, m.schedFetch(sector, storiface.FTUnsealed, storiface.PathSealing, storiface.AcquireMove), func(ctx context.Context, w Worker) error {
+		err := m.startWork(ctx, w, wk)(w.SealPreCommit1(ctx, sector, ticket, pieces))
+		if err != nil {
+			return err
+		}
 
-	// generate data for kafka, which can all rust-*-ffi directly
-	waitRes()
+		waitRes()
+		return nil
+	})
+
 	if err != nil {
-		return storage.SectorCids{}, err
+		return nil, err
 	}
 
 	return out, waitErr
@@ -750,6 +747,37 @@ func (m *Manager) SchedDiag(ctx context.Context, doSched bool) (interface{}, err
 
 func (m *Manager) Close(ctx context.Context) error {
 	return m.sched.Close(ctx)
+}
+
+func (m *Manager) PledgeSector(ctx context.Context, sector storage.SectorRef, pieces []abi.UnpaddedPieceSize, sz abi.UnpaddedPieceSize) ([]abi.PieceInfo, error) {
+	return m.kafkaSealer.addPiece(sector, pieces, sz)
+}
+
+func (m *Manager) SealPreCommit(ctx context.Context, sector storage.SectorRef, ticket abi.SealRandomness, pieces []abi.PieceInfo) (storage.SectorCids, error) {
+	return m.kafkaSealer.sealPreCommit(sector, ticket, pieces)
+}
+
+func (m *Manager) SealCommit(ctx context.Context, sector storage.SectorRef, ticket abi.SealRandomness, seed abi.InteractiveSealRandomness, pieces []abi.PieceInfo, cids storage.SectorCids) (storage.Proof, error) {
+	return []byte{}, nil
+}
+
+func (m *Manager) KafkaFinalizeSector(ctx context.Context, sector storage.SectorRef) error {
+	out, ids, err := m.localStore.AcquireSector(ctx, sector, storiface.FTNone, storiface.FTSealed, storiface.PathStorage, storiface.AcquireMove)
+	if err != nil {
+		return nil
+	}
+
+	if err := m.kafkaSealer.FinalizeSector(sector, out); err != nil {
+		return err
+	}
+
+	// declaresector
+	m.index.StorageDeclareSegdctor(ctx, ids.ID)
+	return nil
+}
+
+func (m *Manager) UseKafka(sector storage.SectorRef) bool {
+	return m.kafkaSealer.canHandle(sector.ID)
 }
 
 var _ SectorManager = &Manager{}

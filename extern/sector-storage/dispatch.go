@@ -2,6 +2,7 @@ package sectorstorage
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/filecoin-project/filecoin-ffi/generated"
 	"github.com/filecoin-project/go-address"
@@ -40,6 +41,7 @@ type AddPieceResp struct {
 	CallID     CallID `json: "CallID"`
 	PieceInfos []abi.PieceInfo
 	ServerID   string
+	AP_Time    time.Duration
 }
 
 type SealPreCommitParam struct {
@@ -54,7 +56,7 @@ type SealPreCommitParam struct {
 
 type SealPreCommitResp struct {
 	ErrCode int
-	CallID  storiface.CallID `json:"CallID"`
+	CallID  CallID `json:"CallID"`
 	CommR   []byte
 	CommD   []byte
 }
@@ -94,6 +96,7 @@ type SealCommitResp struct {
 }
 
 type SealPreCommitErrCode int
+type FinalizeSectorErrCode int
 
 const (
 	SealPreCommitSuccess = SealPreCommitErrCode(0)
@@ -129,6 +132,16 @@ type SealPreCommitResult struct {
 	err    SealPreCommitErrCode
 	callID storiface.CallID
 	sealed storage.SectorCids
+}
+
+type FinalizeSectorParam struct {
+	CallID CallID
+	Out    storiface.SectorPaths
+}
+
+type FinalizeSectorResp struct {
+	err    FinalizeSectorErrCode
+	CallID CallID
 }
 
 func (m *Manager) sendSealPreCommitRequest(sector storage.SectorRef, ticket abi.SealRandomness, pieces []abi.PieceInfo) error {

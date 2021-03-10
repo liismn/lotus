@@ -151,6 +151,21 @@ func (m *Sealing) handlePreCommit1(ctx statemachine.Context, sector SectorInfo) 
 		return ctx.Send(SectorOldTicket{}) // go get new ticket
 	}
 
+	// Use Kafka?
+	if m.sealer.UseKafka(m.minerSector(sector.SectorType, sector.SectorNumber)) {
+		cids, err := m.sealer.SealPreCommit(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber), sector.TicketValue, sector.pieceInfos())
+		if err != nil {
+			return ctx.Send(SectorSealPreCommit1Failed{xerrors.Errorf("seal pre commit(1) failed: %w", err)})
+		}
+		if cids.Unsealed == cid.Undef {
+			return ctx.Send(SectorSealPreCommit1Failed{xerrors.Errorf("seal pre commit(2) returned undefined CommD")})
+		}
+		return ctx.Send(SectorPreCommit2{
+			Unsealed: cids.Unsealed,
+			Sealed:   cids.Sealed,
+		})
+	}
+
 	pc1o, err := m.sealer.SealPreCommit1(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber), sector.TicketValue, sector.pieceInfos())
 	if err != nil {
 		return ctx.Send(SectorSealPreCommit1Failed{xerrors.Errorf("seal pre commit(1) failed: %w", err)})
@@ -398,23 +413,33 @@ func (m *Sealing) handleCommitting(ctx statemachine.Context, sector SectorInfo) 
 		Sealed:   *sector.CommR,
 	}
 
-	//c2in, err := m.sealer.SealCommit1(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber), sector.TicketValue, sector.SeedValue, sector.pieceInfos(), cids)
-	//if err != nil {
-	//	return ctx.Send(SectorComputeProofFailed{xerrors.Errorf("computing seal proof failed(1): %w", err)})
-	//}
+	if m.sealer.UseKafka(m.minerSector(sector.SectorType, sector.SectorNumber)) {
+		proof, err := m.sealer.SealCommit(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber), sector.TicketValue, sector.SeedValue, sector.pieceInfos(), cids)
+		if err != nil {
+			return ctx.Send(SectorComputeProofFailed{xerrors.Errorf("computing seal proof failed(1): %w", err)})
+		}
+		return ctx.Send(SectorCommitted{
+			Proof: proof,
+		})
 
-	//proof, err := m.sealer.SealCommit2(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber), c2in)
-	//if err != nil {
-	//	return ctx.Send(SectorComputeProofFailed{xerrors.Errorf("computing seal proof failed(2): %w", err)})
-	//}
-	proof, err := m.sealer.SealCommit1(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber), sector.TicketValue, sector.SeedValue, sector.pieceInfos(), cids)
-	if err != nil {
-		return ctx.Send(SectorComputeProofFailed{xerrors.Errorf("computing seal proof failed(2): %w", err)})
+	} else {
+		c2in, err := m.sealer.SealCommit1(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber), sector.TicketValue, sector.SeedValue, sector.pieceInfos(), cids)
+		if err != nil {
+			return ctx.Send(SectorComputeProofFailed{xerrors.Errorf("computing seal proof failed(1): %w", err)})
+		}
+
+		proof, err := m.sealer.SealCommit2(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber), c2in)
+		if err != nil {
+			return ctx.Send(SectorComputeProofFailed{xerrors.Errorf("computing seal proof failed(2): %w", err)})
+		}
+		if err != nil {
+			return ctx.Send(SectorComputeProofFailed{xerrors.Errorf("computing seal proof failed(2): %w", err)})
+		}
+
+		return ctx.Send(SectorCommitted{
+			Proof: proof,
+		})
 	}
-
-	return ctx.Send(SectorCommitted{
-		Proof: proof,
-	})
 }
 
 func (m *Sealing) handleSubmitCommit(ctx statemachine.Context, sector SectorInfo) error {
@@ -516,9 +541,16 @@ func (m *Sealing) handleCommitWait(ctx statemachine.Context, sector SectorInfo) 
 
 func (m *Sealing) handleFinalizeSector(ctx statemachine.Context, sector SectorInfo) error {
 	// TODO: Maybe wait for some finality
+	// Use Kafka?
+	if m.sealer.UseKafka(m.minerSector(sector.SectorType, sector.SectorNumber)) {
+		if err := m.sealer.KafkaFinalizeSector(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber)); err != nil {
+			return ctx.Send(SectorFinalizeFailed{xerrors.Errorf("finalize sector: %w", err)})
+		}
+	} else {
 
-	if err := m.sealer.FinalizeSector(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber), sector.keepUnsealedRanges(false)); err != nil {
-		return ctx.Send(SectorFinalizeFailed{xerrors.Errorf("finalize sector: %w", err)})
+		if err := m.sealer.FinalizeSector(sector.sealingCtx(ctx.Context()), m.minerSector(sector.SectorType, sector.SectorNumber), sector.keepUnsealedRanges(false)); err != nil {
+			return ctx.Send(SectorFinalizeFailed{xerrors.Errorf("finalize sector: %w", err)})
+		}
 	}
 
 	return ctx.Send(SectorFinalized{})
